@@ -33,10 +33,7 @@ $\text{cert}_{\text{K}} := [(\text{K}, \text{ID})]_{\text{CA}^{-1}}$
 
 Validating a certificate requires a certificate chain in order to verify a chain of trust to a trust anchor (e.g., a root certificate)
 
-\subsection*{Credential}
-Private key and certificate
 
-$(\text{K}^{-1}, \text{cert}_{\text{K}})$
 
 
 
@@ -87,6 +84,7 @@ Line D: The LDevID is verified by the device owner's CA to have the correct key 
 
 Box 3: The LAK Certificate and LDevID Certificate is signed by the device owner's CA
 
+\iffalse
 \subsection*{extra}
 
 Prove a new key belongs to a specific device: 1) binding the TPM to the OEM device and 2) binding an AK to a TPM using the EK
@@ -96,7 +94,7 @@ An AK certificate is the trust anchor for certificates created later (because it
 The OEM CA makes an assertion by signing an IAK certificate that is a primary security dependency for later DevID certificate creation
 
 An OEM-supplied IAK certificate is a definitive assertion to applications that need proof that the IAK belongs to a specific device
-
+\fi
 
 
 
@@ -131,12 +129,12 @@ Detailed Procedure:
         \item Verify the EK certificate using the TPM manufacturer's public key
         \item Verify the attributes of the IAK
     \end{enumerate}
-    \item The CA uses TPM2\_MakeCredential to create a credential blob 
+    \item The CA uses TPM2\_MakeCredential to create an encrypted credential blob 
     \begin{enumerate}
         \item The cryptographic name of the IAK (hash of IAK public area)
         \item Nonce
+        \item Encrypted with the EK
     \end{enumerate}
-    \item The CA encrypts the credential blob using the EK
     \item The CA sends the encrypted credential blob to the Platform
     \item The Platform uses TPM2\_ActivateCredential command to release the nonce (proves that the IAK is loaded on the same TPM as the EK)
     \begin{enumerate}
