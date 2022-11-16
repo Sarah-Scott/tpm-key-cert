@@ -393,7 +393,7 @@ Qed.
 Definition oemSteps2 (r' : randType) : command :=
 (*8*)TPM2_ActivateCredential (encrypt (credential (key (Public (AK initial))) r') (Public EK))
                              (Private EK).
-                             
+
 Definition oemFinal (r' : randType) : state :=
 (* *)(Union _ oemMid
 (*7*)(send (encrypt (credential (key (Public (AK initial))) r') (Public EK)))) :
