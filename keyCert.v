@@ -9,7 +9,7 @@ Require Import Coq.Sets.Ensembles.
 (* *********** *)
 
 (* TODO: TPM and Device identities/info *)
-(* TODO: Restricted attribute for keys *)
+(* TODO: Restricted attribute for keys - TPM state vs Device state *)
 
 Inductive ak_val : Set :=
 | initial : ak_val
