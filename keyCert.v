@@ -9,6 +9,7 @@ Require Import Coq.Sets.Ensembles.
 (* *********** *)
 
 (* TODO: TPM and Device identities/info *)
+(* TODO: Model TPM state vs general state *)
 (* TODO: Restricted attribute for keys *)
 
 Inductive ak_val : Set :=
@@ -29,7 +30,6 @@ Inductive keyType : Type :=
 | Private : key_val -> keyType
 | Public : key_val -> keyType.
 
-(* TODO: find better model for random numbers *)
 Definition randType := nat.
 
 (* TODO: hash : message -> message *)
@@ -42,7 +42,6 @@ Inductive message : Type :=
 | encrypt : message -> keyType -> message
 | pair : message -> message -> message.
 
-(* TODO: CheckNonce *)
 (* TODO: TPM2_Hash : message -> command *)
 Inductive command : Type :=
 | TPM2_Create : key_val -> command
@@ -53,6 +52,7 @@ Inductive command : Type :=
 | TPM2_GetRandom : randType -> command (* TODO: remove randType parameter *)
 | TPM2_MakeCredential : keyType -> randType -> keyType -> command
 | TPM2_ActivateCredential : message -> keyType -> command
+| CheckNonce : randType -> command
 | MakeCert : keyType -> keyType -> command
 | Sequence : command -> command -> command.
 
@@ -98,6 +98,9 @@ Inductive execute : state -> command -> state -> Prop :=
     In _ st (encrypt (credential m r) (Public EK)) ->
     In _ st (key (Private EK)) ->
     execute st (TPM2_ActivateCredential (encrypt (credential m r) (Public EK)) (Private EK)) (st : (credential m r) : (rand r))
+| E_CheckNonce : forall st r,
+    In _ st (rand r) ->
+    execute st (CheckNonce r) st
 | E_MakeCert : forall st k k0,
     In _ st (key k) ->
     In _ st (key k0) ->
@@ -188,6 +191,7 @@ Definition ownerIni : state :=
 (*0*)(Singleton _ (key (Private (AK initial)))) :
      (sign (key (Public (AK initial))) (Private (CA oem))).
 
+(* Certificate Signing Request for local attestation key *)
 Definition lakCSR : message :=
 ((sign (key (Public (AK initial))) (Private (CA oem))),
  (sign (TPM2_Attest (Private (AK local))) (Private (AK initial))),
@@ -300,9 +304,10 @@ Definition oemIni : state :=
 (*0*)(Singleton _ (key (Private EK))) :
      (sign (key (Public EK)) (Private (CA tm))).
 
+(* Certificate Signing Request for initial attestion key *)
 Definition iakCSR : message :=
 ((sign (key (Public EK)) (Private (CA tm))),
- (key (Public (AK initial))),
+ (key (Public (AK initial))), (*TODO: replace with id *)
  (key (Public (AK initial)))).
 
 Definition oemSteps1 : command :=
@@ -386,32 +391,45 @@ Qed.
 
 (*7*)(* send (encrypt (credential (key (Public (AK initial))) r) (Public EK)) *)
 
-Definition oemSteps2 : command :=
-(*8*)TPM2_ActivateCredential (encrypt (credential (key (Public (AK initial))) r) (Public EK))
+Definition oemSteps2 (r' : randType) : command :=
+(*8*)TPM2_ActivateCredential (encrypt (credential (key (Public (AK initial))) r') (Public EK))
                              (Private EK).
-
-Definition oemFinal : state :=
+                             
+Definition oemFinal (r' : randType) : state :=
 (* *)(Union _ oemMid
-(*7*)(send (encrypt (credential (key (Public (AK initial))) r) (Public EK)))) :
-(*8*)(credential (key (Public (AK initial))) r) :
-     (rand r).
+(*7*)(send (encrypt (credential (key (Public (AK initial))) r') (Public EK)))) :
+(*8*)(credential (key (Public (AK initial))) r') :
+      (rand r').
 
-Theorem correct_oemFinal :
+(*9*)(* send (rand r') *)
+
+Definition caOemSteps2 (r' : randType) : command :=
+(*10*)CheckNonce r'.
+
+Definition caOemFinal : state := caOemMid.
+
+Theorem CertIAK_spec :
 execute oemIni oemSteps1 oemMid /\
 In _ oemMid (sign iakCSR (Private (AK initial))) /\
 execute (Union _ caOemIni (send (sign iakCSR (Private (AK initial))))) caOemSteps1 caOemMid /\
 In _ caOemMid (encrypt (credential (key (Public (AK initial))) r) (Public EK)) /\
-execute (Union _ oemMid (send (encrypt (credential (key (Public (AK initial))) r) (Public EK)))) oemSteps2 oemFinal.
-repeat try split.
-- apply correct_caOemMid.
-- apply correct_caOemMid.
-- apply correct_caOemMid.
-- unfold caOemMid. apply Union_intror. apply In_singleton.
-- unfold oemFinal; unfold oemMid; unfold oemIni; unfold oemSteps2; unfold iakCSR; simpl.
-  apply E_ActivateCredential.
--- apply Union_intror. apply In_singleton.
--- apply Union_introl. apply Union_introl. apply Union_introl. apply Union_introl.
-   apply Union_introl. apply Union_introl. apply In_singleton.
+exists r',
+(execute (Union _ oemMid (send (encrypt (credential (key (Public (AK initial))) r) (Public EK)))) (oemSteps2 r') (oemFinal r') /\
+In _ (oemFinal r') (rand r') /\
+execute caOemMid (caOemSteps2 r') caOemFinal).
+Proof.
+  repeat try split.
+  - apply correct_oemMid.
+  - apply correct_caOemMid.
+  - apply correct_caOemMid.
+  - unfold caOemMid. apply Union_intror. apply In_singleton.
+  - exists r. repeat split.
+  -- unfold oemFinal; unfold oemMid; unfold oemIni; unfold oemSteps2; unfold iakCSR; simpl.
+     apply E_ActivateCredential.
+  --- apply Union_intror. apply In_singleton.
+  --- apply Union_introl. apply Union_introl. apply Union_introl. apply Union_introl.
+      apply Union_introl. apply Union_introl. apply In_singleton.
+  -- unfold oemFinal. apply Union_intror. apply In_singleton.
+  -- unfold caOemFinal; unfold caOemMid; unfold caOemIni; unfold caOemSteps2; unfold iakCSR.
+     apply E_CheckNonce. apply Union_introl. apply Union_intror. apply In_singleton.
 Qed.
-
-(* TODO: final OEM CA step *)
