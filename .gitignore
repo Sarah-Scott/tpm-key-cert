@@ -1,6 +1,10 @@
 Documentation/keyCert.aux
+Documentation/keyCert.bbl
+Documentation/keyCert.bcf
+Documentation/keyCert.blg
 Documentation/keyCert.fdb_latexmk
 Documentation/keyCert.fls
 Documentation/keyCert.log
 Documentation/keyCert.out
+Documentation/keyCert.run.xml
 Documentation/keyCert.synctex.gz

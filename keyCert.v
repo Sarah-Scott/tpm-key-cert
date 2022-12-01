@@ -1,15 +1,14 @@
+
 Require Import Coq.Init.Nat.
-Require Import Coq.Sets.Ensembles.
+Require Import Coq.Lists.List.
+Import ListNotations.
 
+Section KeyCert.
 
-
-
-
-(* Definitions *)
-(* *********** *)
+(* Keys *)
+(* **** *)
 
 (* TODO: TPM and Device identities/info *)
-(* TODO: Restricted attribute for keys - TPM state vs Device state *)
 
 Inductive ak_val : Set :=
 | initial : ak_val
@@ -23,93 +22,207 @@ Inductive ca_val : Set :=
 Inductive key_val : Set :=
 | EK : key_val              (* endorsement key *)
 | AK : ak_val -> key_val    (* attestation key *)
-| CA : ca_val -> key_val.   (* certificate authority key *)
+| DevID : ak_val -> key_val (* device identification key *)
+| CA : ca_val -> key_val    (* certificate authority key *)
+| Bad : key_val.
 
-Inductive keyType : Type := 
+Inductive keyType : Type :=
 | Private : key_val -> keyType
 | Public : key_val -> keyType.
 
+Inductive Restricted : key_val -> Prop :=
+| R_EK : Restricted EK
+| R_AK : forall a, Restricted (AK a).
+
+Inductive NonRestricted : key_val -> Prop :=
+| NR_DevID : forall a, NonRestricted (DevID a) 
+| NR_CA : forall c, NonRestricted (CA c)
+| NR_Bad : NonRestricted Bad.
+
+Inductive Signing : key_val -> Prop :=
+| S_AK : forall a, Signing (AK a)
+| S_DevID : forall a, Signing (DevID a)
+| S_CA : forall c, Signing (CA c)
+| S_Bad : Signing Bad.
+
+Inductive Decrypting : key_val -> Prop :=
+| D_EK : Decrypting EK
+| D_Bad : Decrypting Bad.
+
+Hint Constructors Restricted NonRestricted Signing Decrypting : core.
+
+Theorem or_RestrictedNonRestricted : forall v,
+Restricted v \/ NonRestricted v.
+Proof.
+  intros v; destruct v; auto.
+Qed.
+
+Theorem or_SigningDecrypting : forall v,
+Signing v \/ Decrypting v.
+Proof.
+  intros v; destruct v; auto.
+Qed.
+
+Hint Resolve or_RestrictedNonRestricted or_SigningDecrypting : core.
+
+
+
+
+(* Small-Step Semantics *)
+(* ******************** *)
+
 Definition randType := nat.
 
-(* TODO: hash : message -> message *)
 Inductive message : Type :=
 | key : keyType -> message
 | rand : randType -> message
-| TPM2_Attest : keyType -> message
+| TPM2B_Attest : keyType -> message
+| hash : message -> message
 | sign : message -> keyType -> message
 | credential : message -> randType -> message
 | encrypt : message -> keyType -> message
+| TCG_CSR_LDevID : message -> message -> message
+| TCG_CSR_IDevID : message -> message -> message
+| certificate : keyType -> message    (* TODO: keyType -> id -> message *)
 | pair : message -> message -> message.
 
-(* TODO: TPM2_Hash : message -> command *)
 Inductive command : Type :=
-| TPM2_Create : key_val -> command
 | TPM2_Certify : keyType -> keyType -> command
-| MakeCSR : message -> message -> keyType -> command
+| MakeCSR_LDevID : message -> message -> command
+| MakeCSR_IDevID : message -> keyType -> command (* TODO: id -> message -> keyType -> command*)
+| TPM2_Hash : message -> command
+| CheckHash : message -> message -> command
 | TPM2_Sign : message -> keyType -> command
 | CheckSig : message -> keyType -> command
-| TPM2_GetRandom : randType -> command (* TODO: remove randType parameter *)
-| TPM2_MakeCredential : keyType -> randType -> keyType -> command
-| TPM2_ActivateCredential : message -> keyType -> command
-| CheckNonce : randType -> command
-| MakeCert : keyType -> keyType -> command
+| TPM2_GetRandom : randType -> command
+| CheckNonce : message -> randType -> command
+| TPM2_MakeCredential : message -> randType -> keyType -> command
+| TPM2_ActivateCredential : message -> keyType -> keyType -> command
+| MakeCert : keyType -> keyType -> command  (* TODO: keyType -> id -> keyType -> message *)
 | Sequence : command -> command -> command.
 
 (* corresponds to what an entity knows *)
-Definition state := Ensemble message. (* ? should be a decidable structure ? *)
+Definition tpm_state := list message. (* subset of state *)
+Definition state := list message.
 
-Notation "m1 , m2" := (pair m1 m2)  (at level 90, left associativity).
-Notation "c1 ; c2" := (Sequence c1 c2) (at level 90, left associativity).
-Notation "A : x" := (Add message A x) (at level 90, left associativity).
-
-Inductive execute : state -> command -> state -> Prop :=
-| E_Create : forall st v, 
-    execute st (TPM2_Create v) (st : (key (Private v)) : (key (Public v)))
-| E_Certify : forall st k k0,
-    In _ st (key k) ->
-    In _ st (key k0) ->
-    execute st (TPM2_Certify k k0) (st : (sign (TPM2_Attest k) k0))
-| E_MakeCSR : forall st m1 m2 k,
-    In _ st m1 ->
-    In _ st m2 ->
-    In _ st (key k) ->
-    execute st (MakeCSR m1 m2 k) (st : (m1, m2, (key k)))
-| E_Sign : forall st m k,
-    In _ st m ->
-    In _ st (key k) ->
-    execute st (TPM2_Sign m k) (st : (sign m k))
-| E_CheckSigAK : forall st m a,
-    In _ st (sign m (Private (AK a))) ->
-    In _ st (key (Public (AK a))) ->
-    execute st (CheckSig (sign m (Private (AK a))) (Public (AK a))) st
-| E_CheckSigCA : forall st m c,
-    In _ st (sign m (Private (CA c))) -> (* ? required ? *)
-    In _ st (key (Public (CA c))) ->
-    execute st (CheckSig (sign m (Private (CA c))) (Public (CA c))) st
-| E_GetRandom : forall st r,
-    execute st (TPM2_GetRandom r) (st : (rand r))
-| E_MakeCredential : forall st k r k0,
-    In _ st (key k) ->  (* TODO: replace with name *)
-    In _ st (rand r) ->
-    In _ st (key k0) ->
-    execute st (TPM2_MakeCredential k r k0) (st : (encrypt (credential (key k) r) k0))
-| E_ActivateCredential : forall st m r,
-    In _ st (encrypt (credential m r) (Public EK)) ->
-    In _ st (key (Private EK)) ->
-    execute st (TPM2_ActivateCredential (encrypt (credential m r) (Public EK)) (Private EK)) (st : (credential m r) : (rand r))
-| E_CheckNonce : forall st r,
-    In _ st (rand r) ->
-    execute st (CheckNonce r) st
-| E_MakeCert : forall st k k0,
-    In _ st (key k) ->
-    In _ st (key k0) ->
-    execute st (MakeCert k k0) (st : (sign (key k) k0))
-| E_Sequence : forall st st' st'' c1 c2,
-    execute st c1 st' ->
-    execute st' c2 st'' ->
-    execute st (Sequence c1 c2) st''.
+Notation "m1 ,, m2" := (pair m1 m2)  (at level 90, left associativity).
+Notation "c1 ;; c2" := (Sequence c1 c2) (at level 90, left associativity).
 
 
+Inductive execute : tpm_state * state -> command -> tpm_state * state -> Prop :=
+| E_Certify : forall stTpm st v v0,
+    In (key (Private v)) stTpm ->   (* private part of key to be certified resides in TPM *)
+    In (key (Private v0)) stTpm ->  (* key to sign the TPM2_Attest structure resides in same TPM *)
+    Signing v0 ->
+    execute (stTpm, st)
+            (TPM2_Certify (Public v) (Private v0)) 
+            (((sign (TPM2B_Attest (Public v)) (Private v0))::stTpm),
+             ((sign (TPM2B_Attest (Public v)) (Private v0))::st))
+| E_MakeCSR_LDevID : forall stTpm st m1 m2,
+    In m1 stTpm ->    (* signed TPM2_Attest structure resides in TPM *)
+    In m2 st ->       (* IAK certificate *)
+    execute (stTpm, st)
+            (MakeCSR_LDevID m1 m2)
+            (stTpm,
+            ((TCG_CSR_LDevID m1 m2)::st))
+| E_MakeCSR_IDevID : forall stTpm st m k,
+    In m st ->        (* EK certificate *)
+    In (key k) st ->  (* public part of IAK *)
+    execute (stTpm, st)
+            (MakeCSR_IDevID m k)
+            (stTpm,
+            (TCG_CSR_IDevID m (key k))::st)
+| E_Hash : forall stTpm st m,
+    In m st ->        (* message to be hashed *)
+    execute (stTpm, st)
+            (TPM2_Hash m)
+            ((hash m)::stTpm,
+             (hash m)::st)
+| E_CheckHash : forall stTpm st m,
+    In (hash m) st -> (* hash digest *)
+    In m st ->        (* message to check against hash *)
+    execute (stTpm, st)
+            (CheckHash (hash m) m)
+            (stTpm, st)
+| E_SignNR : forall stTpm st m v,
+    In (key (Private v)) stTpm -> (* key to sign resides in TPM *)
+    Signing v ->
+    NonRestricted v ->            (* key must be NonRestricted *)
+    In m st ->
+    execute (stTpm, st)
+            (TPM2_Sign m (Private v))
+            ((sign m (Private v))::stTpm,
+             (sign m (Private v))::st)
+| E_SignR : forall stTpm st m v,
+    In (key (Private v)) stTpm -> (* key to sign resides in TPM *)
+    Signing v ->
+    Restricted v ->               (* ? not required ? *)
+    In m stTpm ->                 (* message to be signed resides in same TPM *)
+    execute (stTpm,st)
+            (TPM2_Sign m (Private v))
+            ((sign m (Private v))::stTpm,
+             (sign m (Private v))::st)
+| E_CheckSig : forall stTpm st m v,
+    In (sign m (Private v)) st -> (* signature *)
+    In (key (Public v)) st ->     (* public part of key that performed the signature *)
+    execute (stTpm, st)
+            (CheckSig (sign m (Private v)) (Public v))
+            (stTpm, st)
+| E_GetRandom : forall stTpm st r,
+    execute (stTpm, st) 
+            (TPM2_GetRandom r) 
+            ((rand r)::stTpm,
+             (rand r)::st)
+| E_CheckNonce : forall stTpm st r,
+    In (rand r) stTpm ->          (* golden value secret resides in TPM *)
+    execute (stTpm, st)
+            (CheckNonce (rand r) r)
+            (stTpm, st)
+| E_MakeCredential : forall stTpm st m r v0,
+    In m st ->                    (* hash of public part of key i.e., name of key *)
+    In (rand r) stTpm ->          (* secret resides in TPM *)
+    In (key (Public v0)) st ->    (* key to encrypt the credential structure *)
+    Decrypting v0 ->
+    execute (stTpm, st)
+            (TPM2_MakeCredential m r (Public v0)) 
+            ((encrypt (credential m r) (Public v0))::stTpm,
+             (encrypt (credential m r) (Public v0))::st)
+| E_ActivateCredential : forall stTpm st m r v v0,
+    In (encrypt (credential (hash m) r) (Public v)) st -> (* encrypted credential structure *)
+    In (key (Private v)) stTpm ->  (* key to decrypt resides in TPM *)
+    Decrypting v ->
+    In (key (Private v0)) stTpm -> (* private part of key to be certified resides in same TPM *)
+    execute (stTpm, (hash m)::st) (CheckHash (hash m) (key (Public v0))) (stTpm, (hash m)::st) ->
+    execute (stTpm, st)
+            (TPM2_ActivateCredential (encrypt (credential (hash m) r) (Public v)) 
+                                     (Private v)
+                                     (Private v0)) 
+            ((rand r)::(credential (hash m) r)::stTpm,
+             (rand r)::(credential (hash m) r)::st)
+| E_MakeCert : forall stTpm st k v0,
+    In (key k) st ->                (* key to be certified *)
+    In (key (Private v0)) stTpm ->  (* key to sign the certificate resides in TPM *)
+    Signing v0 ->
+    execute (stTpm, st)
+            (MakeCert k (Private v0))
+            ((sign (certificate k) (Private v0))::stTpm,
+             (sign (certificate k) (Private v0))::st)
+| E_Sequence : forall stTpm st stTpm' st' stTpm'' st'' c1 c2,
+    execute (stTpm,st) c1 (stTpm',st') ->
+    execute (stTpm',st') c2 (stTpm'',st'') ->
+    execute (stTpm,st) (Sequence c1 c2) (stTpm'',st'').
+
+Hint Constructors execute : core.
+
+Ltac execute_constructor :=
+match goal with
+| [ |- execute _ (TPM2_Sign _ (Private (AK _))) _ ] => apply E_SignR
+| [ |- execute _ (TPM2_Sign _ (Private (DevID _))) _ ] => apply E_SignNR
+| [ |- execute _ (TPM2_Sign _ (Private (CA _))) _ ] => apply E_SignNR
+| [ |- execute _ (TPM2_Sign _ (Private (Bad))) _ ] => apply E_SignNR
+| [ |- execute _ (Sequence _ _) _ ] => eapply E_Sequence
+| [ |- execute _ _ _] => constructor
+end.
 
 
 
@@ -119,31 +232,47 @@ Inductive execute : state -> command -> state -> Prop :=
 (* an entity who knows a message can discover additional messages from it *)
 Inductive discoverable : message -> state -> Prop :=
 | D_key : forall k,
-    discoverable (key k) (Singleton _ (key k))
+    discoverable (key k) [key k]
 | D_rand : forall r,
-    discoverable (rand r) (Singleton _ (rand r))
-| D_Attest : forall k,
-    discoverable (TPM2_Attest k) (Singleton _ (TPM2_Attest k))
-| D_sign : forall m k st, 
+    discoverable (rand r) [rand r]
+| D_Attest : forall k,                  (* contents of TPM2_Attest structure *)
+    discoverable (TPM2B_Attest k) [(TPM2B_Attest k); (key k)] 
+| D_hash : forall m,
+    discoverable (hash m) [hash m]
+| D_sign : forall m k st,               (* contents of signature *)
     discoverable m st ->
-    discoverable (sign m k) (st : (sign m k))
-| D_credential : forall m r st,
-    discoverable m st ->
-    discoverable (credential m r) (st : (credential m r) : (rand r))
+    discoverable (sign m k) ((sign m k)::st)
+| D_credential : forall m r,
+    discoverable (credential m r) [credential m r]
 | D_encrypt : forall m k,
-    discoverable (encrypt m k) (Singleton _ (encrypt m k))
-| D_pair : forall m1 m2 st1 st2,
+    discoverable (encrypt m k) [encrypt m k]
+| D_CSR_LDevID : forall m1 m2 st1 st2,  (* contents of TCG_CSR_LDevID *)
     discoverable m1 st1 ->
     discoverable m2 st2 ->
-    discoverable (pair m1 m2) ((Union _ st1 st2) : (m1, m2)).
+    discoverable (TCG_CSR_LDevID m1 m2) ((TCG_CSR_LDevID m1 m2)::st1++st2)
+| D_CSR_IDevID : forall m1 m2 st1 st2,  (* contents of TCG_CSR_IDevID *)
+    discoverable m1 st1 -> 
+    discoverable m2 st2 ->
+    discoverable (TCG_CSR_IDevID m1 m2) ((TCG_CSR_IDevID m1 m2)::st1++st2)
+| D_certificate : forall k,             (* contents of certificate *)
+    discoverable (certificate k) [(certificate k); (key k)]
+| D_pair : forall m1 m2 st1 st2,        (* contents of pair *)
+    discoverable m1 st1 ->
+    discoverable m2 st2 -> 
+    discoverable (pair m1 m2) ((m1,,m2)::(st1++st2)).
+
+Hint Constructors discoverable : core.
 
 (* when sending a message the recipient can discover these additional messages *)
 Fixpoint send (m : message) : state :=
 match m with
-  | sign m0 k => (send m0) : (sign m0 k)
-  | credential m0 r => (send m0) : (credential m0 r) : (rand r)
-  | pair m1 m2 => (Union _ (send m1) (send m2)) : (m1, m2)
-  | _ => Singleton _ m
+  | TPM2B_Attest k => [(TPM2B_Attest k); (key k)]
+  | sign m0 k => ((sign m0 k)::(send m0))
+  | TCG_CSR_LDevID m1 m2 => ((TCG_CSR_LDevID m1 m2)::(send m1)++(send m2))
+  | TCG_CSR_IDevID m1 m2 => ((TCG_CSR_IDevID m1 m2)::(send m1)++(send m2))
+  | certificate k => [(certificate k); (key k)]
+  | pair m1 m2 => ((m1,,m2)::((send m1)++(send m2)))
+  | _ => [m]
 end.
     
 Theorem discoverableSend : forall m st,
@@ -174,6 +303,7 @@ Proof.
   - apply sendDiscoverable.
 Qed.
 
+Hint Resolve iff_DiscoverableSend : core.
 
 
 
@@ -186,106 +316,101 @@ Qed.
 
 (* Numerical comment tags correspond to respective steps in latex documentation *)
 
+Definition ownerIniTpm : tpm_state :=
+[ key (Public (AK local)) ;     (* LAK public *)
+  key (Private (AK local)) ;    (* LAK private *)
+  key (Public (AK initial)) ;   (* IAK public *)
+  key (Private (AK initial)) ]. (* IAK private *)
+
 Definition ownerIni : state :=
-(*0*)(Singleton _ (key (Private (AK initial)))) :
-     (sign (key (Public (AK initial))) (Private (CA oem))).
+[ key (Public (AK local)) ;
+  key (Private (AK local)) ;
+  sign (certificate (Public (AK initial))) (Private (CA oem)) ; (* IAK certificate *)
+  key (Public (AK initial)) ;
+  key (Private (AK initial)) ].
+
 
 (* Certificate Signing Request for local attestation key *)
-Definition lakCSR : message :=
-((sign (key (Public (AK initial))) (Private (CA oem))),
- (sign (TPM2_Attest (Private (AK local))) (Private (AK initial))),
- (key (Public (AK local)))).
+Definition CSR_LAK : message :=
+TCG_CSR_LDevID 
+  (sign (TPM2B_Attest (Public (AK local))) (Private (AK initial)))  (* signed TPM2_Attest structure *)
+  (sign (certificate (Public (AK initial))) (Private (CA oem))).    (* IAK certificate *)
 
 Definition ownerSteps : command :=
-(*1*)TPM2_Create (AK local) ;
-(*2*)TPM2_Certify (Private (AK local)) (Private (AK initial)) ;
-(*3*)MakeCSR (sign (key (Public (AK initial))) (Private (CA oem))) 
-             (sign (TPM2_Attest (Private (AK local))) (Private (AK initial))) 
-             (Public (AK local)) ;
-(*4*)TPM2_Sign lakCSR (Private (AK local)).
+TPM2_Certify (Public (AK local)) (Private (AK initial)) ;;                      (* 1 *)
+MakeCSR_LDevID (sign (TPM2B_Attest (Public (AK local))) (Private (AK initial))) (* 2 *)
+               (sign (certificate (Public (AK initial))) (Private (CA oem))) ;;
+TPM2_Hash CSR_LAK ;;                                                            (* 3 *)
+TPM2_Sign (hash CSR_LAK) (Private (AK local)).                                  (* 4 *)
+
+Definition ownerFinalTpm : tpm_state :=
+sign (hash CSR_LAK) (Private (AK local)) ::                       (* 4 *)
+hash CSR_LAK ::                                                   (* 3 *)
+sign (TPM2B_Attest (Public (AK local))) (Private (AK initial)) :: (* 1 *)
+ownerIniTpm.
 
 Definition ownerFinal : state :=
-(*0*)ownerIni :
-(*1*)(key (Private (AK local))) :
-     (key (Public (AK local))) :
-(*2*)(sign (TPM2_Attest (Private (AK local))) (Private (AK initial))) :
-(*3*)lakCSR :
-(*4*)(sign lakCSR (Private (AK local))).
+sign (hash CSR_LAK) (Private (AK local)) ::                       (* 4 *)
+hash CSR_LAK ::                                                   (* 3 *)
+CSR_LAK ::                                                        (* 2 *)
+sign (TPM2B_Attest (Public (AK local))) (Private (AK initial)) :: (* 1 *)
+ownerIni. 
 
-(* TODO: automate the following proofs *)
-(*
-Hint Unfold In ownerIni ownerSteps lakCSR ownerFinal: core.
-Hint Resolve Union_introl Union_intror In_singleton Extensionality_Ensembles: core.
-Hint Constructors execute : core.
-*)
+Hint Unfold ownerFinalTpm ownerFinal ownerIniTpm ownerIni ownerSteps  : core.
 
+(* 0 - 4 *)
 Theorem correct_ownerFinal :
-execute ownerIni ownerSteps ownerFinal.
+execute (ownerIniTpm, ownerIni) ownerSteps (ownerFinalTpm, ownerFinal).
 Proof.
-  unfold ownerFinal; unfold ownerIni; unfold ownerSteps; unfold lakCSR; simpl. 
-  repeat eapply E_Sequence. 
-  - apply E_Create.
-  - apply E_Certify. 
-  -- apply Union_introl. apply Union_intror. apply In_singleton.
-  -- apply Union_introl. apply Union_introl. apply Union_introl. apply In_singleton.
-  - apply E_MakeCSR.
-  -- apply Union_introl. apply Union_introl. apply Union_introl. apply Union_intror.
-     apply In_singleton.
-  -- apply Union_intror. apply In_singleton.
-  -- apply Union_introl. apply Union_intror. apply In_singleton.
-  - apply E_Sign.
-  -- apply Union_intror. apply In_singleton.
-  -- apply Union_introl. apply Union_introl. apply Union_introl. apply Union_intror.
-     apply In_singleton.
+  autounfold; repeat execute_constructor; simpl; auto.
 Qed.
 
-(*5*)(* send (sign lakCSR (Private (AK local))) *)
+Hint Resolve correct_ownerFinal : core.
+
+(*
+send (CSR_LAK,, (sign (hash CSR_LAK) (Private (AK local))))   (* 5 *)
+*)
+
+Definition caOwnerIniTpm : tpm_state :=
+[ key (Public (CA owner)) ;   (* Owner CA public *)
+  key (Private (CA owner)) ]. (* Owner CA private *)
 
 Definition caOwnerIni : state :=
-(*0*)(Singleton _ (key (Private (CA owner)))) :
-     (key (Public (CA oem))).
+[ key (Public (CA oem)) ;     (* OEM CA public *)
+  key (Public (CA owner)) ;
+  key (Private (CA owner)) ].
 
 Definition caOwnerSteps : command :=
-(*6*)(CheckSig (sign lakCSR (Private (AK local)))
-               (Public (AK local))) ;
-     (CheckSig (sign (key (Public (AK initial))) (Private (CA oem)))
-               (Public (CA oem))) ;
-     (CheckSig (sign (TPM2_Attest (Private (AK local))) (Private (AK initial)))
-               (Public (AK initial))) ;
-(*7*)(MakeCert (Public (AK local)) (Private (CA owner))).
+CheckHash (hash CSR_LAK) CSR_LAK ;;                                       (* 6a *)
+CheckSig (sign (hash CSR_LAK) (Private (AK local)))                       (* 6b *)
+         (Public (AK local)) ;;
+CheckSig (sign (TPM2B_Attest (Public (AK local))) (Private (AK initial))) (* 6c *)
+         (Public (AK initial)) ;;
+CheckSig (sign (certificate (Public (AK initial))) (Private (CA oem)))    (* 6d *)
+         (Public (CA oem)) ;;
+MakeCert (Public (AK local)) (Private (CA owner)).                        (* 7 *)
+
+Definition caOwnerFinalTpm : tpm_state :=
+sign (certificate (Public (AK local))) (Private (CA owner)) ::  (* 7 *)
+caOwnerIniTpm.
 
 Definition caOwnerFinal : state :=
-(*0*)(Union _ caOwnerIni
-(*5*)(send (sign lakCSR (Private (AK local))))) :
-(*7*)(sign (key (Public (AK local))) (Private (CA owner))). 
+sign (certificate (Public (AK local))) (Private (CA owner)) ::  (* 7 *)
+send (CSR_LAK,, (sign (hash CSR_LAK) (Private (AK local)))) ++  (* 5 *)
+caOwnerIni.
 
+Hint Unfold caOwnerFinalTpm caOwnerFinal caOwnerIniTpm caOwnerIni caOwnerSteps : core.
+
+(* 0 - 7 *)
 Theorem CertLAK_spec :
-execute ownerIni ownerSteps ownerFinal /\
-In _ ownerFinal (sign lakCSR (Private (AK local))) /\
-execute (Union _ caOwnerIni (send (sign lakCSR (Private (AK local))))) caOwnerSteps caOwnerFinal.
+execute (ownerIniTpm, ownerIni) ownerSteps (ownerFinalTpm, ownerFinal) /\
+In CSR_LAK ownerFinal /\
+In (sign (hash CSR_LAK) (Private (AK local))) ownerFinal /\
+execute (caOwnerIniTpm, send (CSR_LAK,, sign (hash CSR_LAK) (Private (AK local))) ++ caOwnerIni)
+         caOwnerSteps 
+        (caOwnerFinalTpm, caOwnerFinal).
 Proof.
-  repeat try split.
-  - apply correct_ownerFinal.
-  - unfold ownerFinal; unfold ownerIni; unfold lakCSR. apply Union_intror. apply In_singleton.
-  - unfold caOwnerFinal; unfold caOwnerIni; unfold caOwnerSteps; unfold lakCSR; simpl. 
-    repeat eapply E_Sequence.
-  -- apply E_CheckSigAK.
-  --- apply Union_intror. apply Union_intror. apply In_singleton.
-  --- apply Union_intror. apply Union_introl. apply Union_introl. apply Union_intror.
-      apply In_singleton.
-  -- apply E_CheckSigCA.
-  --- apply Union_intror. apply Union_introl. apply Union_introl. apply Union_introl.
-      apply Union_introl. apply Union_introl. apply Union_intror. apply In_singleton.
-  --- apply Union_introl. apply Union_intror. apply In_singleton.
-  -- apply E_CheckSigAK.
-  --- apply Union_intror. apply Union_introl. apply Union_introl. apply Union_introl.
-      apply Union_introl. apply Union_intror. apply Union_intror. apply In_singleton.
-  --- apply Union_intror. apply Union_introl. apply Union_introl. apply Union_introl.
-      apply Union_introl. apply Union_introl. apply Union_introl. apply In_singleton.
-  -- apply E_MakeCert.
-  --- apply Union_intror. apply Union_introl. apply Union_introl. apply Union_intror.
-      apply In_singleton.
-  --- apply Union_introl. apply Union_introl. apply In_singleton.
+  repeat split; autounfold; repeat execute_constructor; simpl; auto 12.
 Qed.
 
 
@@ -298,137 +423,167 @@ Qed.
 (* ******************************************************* *)
 
 (* Numerical comment tags correspond to respective steps in latex documentation *)
+Definition oemIniTpm : tpm_state :=
+[ key (Public (AK initial)) ;   (* IAK public *)
+  key (Private (AK initial)) ;  (* IAK private *)
+  key (Private EK) ].           (* EK private *)
 
 Definition oemIni : state :=
-(*0*)(Singleton _ (key (Private EK))) :
-     (sign (key (Public EK)) (Private (CA tm))).
+[ key (Public (AK initial)) ;
+  key (Private (AK initial)) ;
+  sign (certificate (Public EK)) (Private (CA tm)) ;  (* EK certificate *)
+  key (Private EK) ].  
 
 (* Certificate Signing Request for initial attestion key *)
-Definition iakCSR : message :=
-((sign (key (Public EK)) (Private (CA tm))),
- (key (Public (AK initial))), (*TODO: replace with id *)
- (key (Public (AK initial)))).
+Definition CSR_IAK : message :=
+TCG_CSR_IDevID
+  (sign (certificate (Public EK)) (Private (CA tm)))  (* EK certificate *)
+  (key (Public (AK initial))).                        (* IAK public *)
 
 Definition oemSteps1 : command :=
-(*1*)TPM2_Create (AK initial) ;
-(*2*)MakeCSR (sign (key (Public EK)) (Private (CA tm)))
-             (key (Public (AK initial))) (* TODO: replace with id*)
-             (Public (AK initial)) ;
-(*3*)TPM2_Sign iakCSR (Private (AK initial)).
+MakeCSR_IDevID (sign (certificate (Public EK)) (Private (CA tm))) (* 1 *)
+               (Public (AK initial)) ;;
+TPM2_Hash CSR_IAK ;;                                              (* 2 *)
+TPM2_Sign (hash CSR_IAK) (Private (AK initial)).                  (* 3 *)
+
+Definition oemMidTpm : state :=
+sign (hash CSR_IAK) (Private (AK initial)) :: (* 3 *)
+hash CSR_IAK ::                               (* 2 *)
+oemIniTpm.
 
 Definition oemMid : state :=
-(*0*)oemIni :
-(*1*)(key (Private (AK initial))) :
-     (key (Public (AK initial))) :
-(*2*)iakCSR :
-(*3*)(sign iakCSR (Private (AK initial))).
+sign (hash CSR_IAK) (Private (AK initial)) :: (* 3 *)
+hash CSR_IAK ::                               (* 2 *)
+CSR_IAK ::                                    (* 1 *)
+oemIni.
 
+Hint Unfold oemMidTpm oemMid oemIniTpm oemIni oemSteps1 : core.
+
+(* 0 - 3 *)
 Theorem correct_oemMid :
-execute oemIni oemSteps1 oemMid.
+execute (oemIniTpm, oemIni) oemSteps1 (oemMidTpm, oemMid).
 Proof.
-  unfold oemMid; unfold oemIni; unfold oemSteps1; unfold iakCSR; simpl. 
-  repeat eapply E_Sequence. 
-  - apply E_Create.
-  - apply E_MakeCSR.
-  -- apply Union_introl. apply Union_introl. apply Union_intror. apply In_singleton.
-  -- apply Union_intror. apply In_singleton.
-  -- apply Union_intror. apply In_singleton.
-  - apply E_Sign.
-  -- apply Union_intror. apply In_singleton.
-  -- apply Union_introl. apply Union_introl. apply Union_intror. apply In_singleton.
+  autounfold; repeat execute_constructor; simpl; auto.
 Qed.
 
-(*4*)(* send (sign iakCSR (Private (AK initial))) *)
+Hint Resolve correct_oemMid : core.
+
+
+(*
+send (CSR_IAK,, (sign (hash CSR_IAK) (Private (AK initial))))   (* 4 *)
+*)
+
+Definition caOemIniTpm : tpm_state :=
+[ key (Public (CA oem)) ;   (* OEM CA public *)
+  key (Private (CA oem)) ]. (* OEM CA private *)
+
 
 Definition caOemIni : state :=
-(*0*)(Singleton _ (key (Private (CA oem)))) :
-     (key (Public (CA tm))).
+[ key (Public (CA tm)) ;    (* TM CA public*)
+  key (Public (CA oem)) ;
+  key (Private (CA oem)) ].
 
 Definition r : randType := 5.
 
 Definition caOemSteps1 : command :=
-(*5*)(CheckSig (sign iakCSR (Private (AK initial)))
-               (Public (AK initial))) ;
-     (CheckSig (sign (key (Public EK)) (Private (CA tm)))
-               (Public (CA tm))) ;
-(*6*)TPM2_GetRandom r ;    
-     TPM2_MakeCredential (Public (AK initial)) r (Public EK).
+CheckHash (hash CSR_IAK) CSR_IAK ;;                                   (* 5a *)
+CheckSig (sign (hash CSR_IAK) (Private (AK initial)))                 (* 5b *)
+         (Public (AK initial)) ;;
+CheckSig (sign (certificate (Public EK)) (Private (CA tm)))           (* 5c *)
+         (Public (CA tm)) ;;
+TPM2_Hash (key (Public (AK initial))) ;;                              (* 6 *)
+TPM2_GetRandom r ;;                                                   (* 7 *)
+TPM2_MakeCredential (hash (key (Public (AK initial)))) r (Public EK). (* 8 *)
+
+Definition caOemMidTpm : tpm_state :=
+encrypt (credential (hash (key (Public (AK initial)))) r) (Public EK) ::  (* 8 *)
+rand r ::                                                                 (* 7 *)
+hash (key (Public (AK initial))) ::                                       (* 6 *)
+caOemIniTpm.
 
 Definition caOemMid : state :=
-(*0*)(Union _ caOemIni
-(*5*)(send (sign iakCSR (Private (AK initial))))) :
-(*6*)(rand r) :
-     (encrypt (credential (key (Public (AK initial))) r) (Public EK)).
+encrypt (credential (hash (key (Public (AK initial)))) r) (Public EK) ::  (* 8 *)
+rand r ::                                                                 (* 7 *)
+hash (key (Public (AK initial))) ::                                       (* 6 *)
+send (CSR_IAK,, (sign (hash CSR_IAK) (Private (AK initial)))) ++          (* 4 *)
+caOemIni.
 
+Hint Unfold caOemMidTpm caOemMid caOemIniTpm caOemIni caOemSteps1 : core. 
+
+(* 0 - 8 *)
 Theorem correct_caOemMid :
-execute oemIni oemSteps1 oemMid /\
-In _ oemMid (sign iakCSR (Private (AK initial))) /\
-execute (Union _ caOemIni (send (sign iakCSR (Private (AK initial))))) caOemSteps1 caOemMid.
+execute (oemIniTpm, oemIni) oemSteps1 (oemMidTpm, oemMid) /\
+In CSR_IAK oemMid /\
+In (sign (hash CSR_IAK) (Private (AK initial))) oemMid /\
+execute (caOemIniTpm, send (CSR_IAK,, sign (hash CSR_IAK) (Private (AK initial))) ++ caOemIni)
+         caOemSteps1
+        (caOemMidTpm, caOemMid).
 Proof.
-  repeat try split.
-  - apply correct_oemMid.
-  - unfold oemMid. apply Union_intror. apply In_singleton.
-  - unfold caOemMid; unfold caOemIni; unfold caOemSteps1; unfold iakCSR; simpl. 
-    repeat eapply E_Sequence.
-  -- apply E_CheckSigAK.
-  --- apply Union_intror. apply Union_intror. apply In_singleton.
-  --- apply Union_intror. apply Union_introl. apply Union_introl. apply Union_intror.
-      apply In_singleton.
-  -- apply E_CheckSigCA.
-  --- apply Union_intror. apply Union_introl. apply Union_introl. apply Union_introl.
-      apply Union_introl. apply Union_introl. apply Union_intror. apply In_singleton.
-  --- apply Union_introl. apply Union_intror. apply In_singleton.
-  -- apply E_GetRandom.
-  -- apply E_MakeCredential.
-  --- apply Union_introl. apply Union_intror. apply Union_introl. apply Union_introl.
-      apply Union_intror. apply In_singleton.
-  --- apply Union_intror. apply In_singleton.
-  --- apply Union_introl. apply Union_intror. apply Union_introl. apply Union_introl.
-      apply Union_introl. apply Union_introl. apply Union_introl. apply Union_introl.
-      apply In_singleton.
+  repeat split; autounfold; repeat execute_constructor; simpl; auto 10.
 Qed.
 
-(*7*)(* send (encrypt (credential (key (Public (AK initial))) r) (Public EK)) *)
+Hint Resolve correct_caOemMid : core.
+
+(*
+send (encrypt (credential (hash (key (Public (AK initial)))) r) (Public EK))   (* 9 *)
+*)
 
 Definition oemSteps2 (r' : randType) : command :=
-(*8*)TPM2_ActivateCredential (encrypt (credential (key (Public (AK initial))) r') (Public EK))
-                             (Private EK).
+TPM2_ActivateCredential (encrypt (credential (hash (key (Public (AK initial)))) r') (Public EK))  (* 10 *)
+                        (Private EK)
+                        (Private (AK initial)).
+
+Definition oemFinalTpm (r' : randType) : tpm_state :=
+(rand r') ::                                            (* 10 *)
+(credential (hash (key (Public (AK initial)))) r') ::   (* 10 *)
+oemMidTpm.
 
 Definition oemFinal (r' : randType) : state :=
-(* *)(Union _ oemMid
-(*7*)(send (encrypt (credential (key (Public (AK initial))) r') (Public EK)))) :
-(*8*)(credential (key (Public (AK initial))) r') :
-      (rand r').
+rand r' ::                                                                        (* 10 *)
+credential (hash (key (Public (AK initial)))) r' ::                               (* 10 *)
+send (encrypt (credential (hash (key (Public (AK initial)))) r') (Public EK)) ++  (* 9 *)
+oemMid.
 
-(*9*)(* send (rand r') *)
+(*
+send (rand r')    (* 11 *)
+*)
 
 Definition caOemSteps2 (r' : randType) : command :=
-(*10*)CheckNonce r'.
+CheckNonce (rand r') r ;;                           (* 12 *)
+MakeCert (Public (AK initial)) (Private (CA oem)).  (* 13 *)
 
-Definition caOemFinal : state := caOemMid.
+Definition caOemFinalTpm : state := 
+sign (certificate (Public (AK initial))) (Private (CA oem)) ::  (* 13 *)
+caOemMidTpm.
 
+Definition caOemFinal (r' : randType) : state := 
+sign (certificate (Public (AK initial))) (Private (CA oem)) ::  (* 13 *)
+send (rand r') ++                                               (* 11 *)
+caOemMid.
+
+Hint Unfold oemFinalTpm oemFinal oemSteps2 : core.
+Hint Unfold caOemFinalTpm caOemFinal caOemSteps2 : core.
+
+(* 0 - 13 *)
 Theorem CertIAK_spec :
-execute oemIni oemSteps1 oemMid /\
-In _ oemMid (sign iakCSR (Private (AK initial))) /\
-execute (Union _ caOemIni (send (sign iakCSR (Private (AK initial))))) caOemSteps1 caOemMid /\
-In _ caOemMid (encrypt (credential (key (Public (AK initial))) r) (Public EK)) /\
+execute (oemIniTpm, oemIni) oemSteps1 (oemMidTpm, oemMid) /\
+In CSR_IAK oemMid /\
+In (sign (hash CSR_IAK) (Private (AK initial))) oemMid /\
+execute (caOemIniTpm, send (CSR_IAK,, sign (hash CSR_IAK) (Private (AK initial))) ++ caOemIni)
+         caOemSteps1
+        (caOemMidTpm, caOemMid) /\
+In (encrypt (credential (hash (key (Public (AK initial)))) r) (Public EK)) caOemMid /\
 exists r',
-(execute (Union _ oemMid (send (encrypt (credential (key (Public (AK initial))) r) (Public EK)))) (oemSteps2 r') (oemFinal r') /\
-In _ (oemFinal r') (rand r') /\
-execute caOemMid (caOemSteps2 r') caOemFinal).
+execute (oemMidTpm, send (encrypt (credential (hash (key (Public (AK initial)))) r) (Public EK)) ++ oemMid) 
+        (oemSteps2 r')
+        (oemFinalTpm r', oemFinal r') /\
+In (rand r') (oemFinal r') /\
+execute (caOemMidTpm, send (rand r') ++ caOemMid)
+        (caOemSteps2 r')
+        (caOemFinalTpm, caOemFinal r').
 Proof.
-  repeat try split.
-  - apply correct_oemMid.
-  - apply correct_caOemMid.
-  - apply correct_caOemMid.
-  - unfold caOemMid. apply Union_intror. apply In_singleton.
-  - exists r. repeat split.
-  -- unfold oemFinal; unfold oemMid; unfold oemIni; unfold oemSteps2; unfold iakCSR; simpl.
-     apply E_ActivateCredential.
-  --- apply Union_intror. apply In_singleton.
-  --- apply Union_introl. apply Union_introl. apply Union_introl. apply Union_introl.
-      apply Union_introl. apply Union_introl. apply In_singleton.
-  -- unfold oemFinal. apply Union_intror. apply In_singleton.
-  -- unfold caOemFinal; unfold caOemMid; unfold caOemIni; unfold caOemSteps2; unfold iakCSR.
-     apply E_CheckNonce. apply Union_introl. apply Union_intror. apply In_singleton.
+  repeat split; autounfold; try (exists r; repeat split); 
+  repeat execute_constructor; simpl; auto 11.
 Qed.
+
+End KeyCert.
