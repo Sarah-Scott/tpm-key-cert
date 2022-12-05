@@ -30,6 +30,12 @@ Inductive keyType : Set :=
 | Private : key_val -> keyType
 | Public : key_val -> keyType.
 
+Inductive attributeType : Set :=
+| restricted : attributeType
+| nonrestricted : attributeType
+| signing : attributeType
+| decrypting : attributeType.
+
 Inductive Restricted : key_val -> Prop :=
 | R_EK : Restricted EK
 | R_AK : forall a, Restricted (AK a).
@@ -65,11 +71,6 @@ Qed.
 
 Hint Resolve or_RestrictedNonRestricted or_SigningDecrypting : core.
 
-Inductive attributeType : Set :=
-| restricted : attributeType
-| nonrestricted : attributeType
-| signing : attributeType
-| decrypting : attributeType.
 
 
 
@@ -392,7 +393,7 @@ TCG_CSR_IDevID
   (sign (certificate (Public EK)) (Private (CA tm)))  (* EK certificate *)
   (key (Public (AK initial))).                        (* IAK public *)
 
-Definition oemSteps1 : command :=
+Definition oemSeq1 : command :=
 MakeCSR_IDevID (sign (certificate (Public EK)) (Private (CA tm))) (* 1 *)
                (Public (AK initial)) ;;
 TPM2_Hash CSR_IAK ;;                                              (* 2 *)
@@ -409,11 +410,11 @@ hash CSR_IAK ::                               (* 2 *)
 CSR_IAK ::                                    (* 1 *)
 oemIni.
 
-Hint Unfold oemMidTpm oemMid oemIniTpm oemIni oemSteps1 : core.
+Hint Unfold oemMidTpm oemMid oemIniTpm oemIni oemSeq1 : core.
 
-(* 0 - 3 *)
+(* Steps 0 - 3 *)
 Theorem correct_oemMid :
-execute (oemIniTpm, oemIni) oemSteps1 (oemMidTpm, oemMid).
+execute (oemIniTpm, oemIni) oemSeq1 (oemMidTpm, oemMid).
 Proof.
   autounfold; repeat execute_constructor; simpl; auto.
 Qed.
@@ -437,7 +438,7 @@ Definition caOemIni : state :=
 
 Definition r : randType := 5.
 
-Definition caOemSteps1 : command :=
+Definition caOemSeq1 : command :=
 CheckHash (hash CSR_IAK) CSR_IAK ;;                                   (* 5a *)
 CheckSig (sign (hash CSR_IAK) (Private (AK initial)))                 (* 5b *)
          (Public (AK initial)) ;;
@@ -462,15 +463,15 @@ hash (key (Public (AK initial))) ::                                       (* 6 *
 send (CSR_IAK,, (sign (hash CSR_IAK) (Private (AK initial)))) ++          (* 4 *)
 caOemIni.
 
-Hint Unfold caOemMidTpm caOemMid caOemIniTpm caOemIni caOemSteps1 : core. 
+Hint Unfold caOemMidTpm caOemMid caOemIniTpm caOemIni caOemSeq1 : core. 
 
-(* 0 - 8 *)
+(* Steps 0 - 8 *)
 Theorem correct_caOemMid :
-execute (oemIniTpm, oemIni) oemSteps1 (oemMidTpm, oemMid) /\
+execute (oemIniTpm, oemIni) oemSeq1 (oemMidTpm, oemMid) /\
 In CSR_IAK oemMid /\
 In (sign (hash CSR_IAK) (Private (AK initial))) oemMid /\
 execute (caOemIniTpm, send (CSR_IAK,, sign (hash CSR_IAK) (Private (AK initial))) ++ caOemIni)
-         caOemSteps1
+         caOemSeq1
         (caOemMidTpm, caOemMid).
 Proof.
   repeat split; autounfold; repeat execute_constructor; simpl; auto 10.
@@ -483,7 +484,7 @@ Hint Resolve correct_caOemMid : core.
 send (encrypt (credential (hash (key (Public (AK initial)))) r) (Public EK))   (* 9 *)
 *)
 
-Definition oemSteps2 (r' : randType) : command :=
+Definition oemSeq2 (r' : randType) : command :=
 TPM2_ActivateCredential (encrypt (credential (hash (key (Public (AK initial)))) r') (Public EK))  (* 10 *)
                         (Private EK)
                         (Private (AK initial)).
@@ -503,7 +504,7 @@ oemMid.
 send (rand r')    (* 11 *)
 *)
 
-Definition caOemSteps2 (r' : randType) : command :=
+Definition caOemSeq2 (r' : randType) : command :=
 CheckNonce (rand r') r ;;                           (* 12 *)
 MakeCert (Public (AK initial)) (Private (CA oem)).  (* 13 *)
 
@@ -516,25 +517,27 @@ sign (certificate (Public (AK initial))) (Private (CA oem)) ::  (* 13 *)
 send (rand r') ++                                               (* 11 *)
 caOemMid.
 
-Hint Unfold oemFinalTpm oemFinal oemSteps2 : core.
-Hint Unfold caOemFinalTpm caOemFinal caOemSteps2 : core.
+Hint Unfold oemFinalTpm oemFinal oemSeq2 : core.
+Hint Unfold caOemFinalTpm caOemFinal caOemSeq2 : core.
 
-(* 0 - 13 *)
+
+(* Steps 0 - 13 *)
+(* Line A in 'Relationships of Keys/Certificates' diagram *)
 Theorem CertIAK_spec :
-execute (oemIniTpm, oemIni) oemSteps1 (oemMidTpm, oemMid) /\
+execute (oemIniTpm, oemIni) oemSeq1 (oemMidTpm, oemMid) /\
 In CSR_IAK oemMid /\
 In (sign (hash CSR_IAK) (Private (AK initial))) oemMid /\
 execute (caOemIniTpm, send (CSR_IAK,, sign (hash CSR_IAK) (Private (AK initial))) ++ caOemIni)
-         caOemSteps1
+         caOemSeq1
         (caOemMidTpm, caOemMid) /\
 In (encrypt (credential (hash (key (Public (AK initial)))) r) (Public EK)) caOemMid /\
 exists r',
 execute (oemMidTpm, send (encrypt (credential (hash (key (Public (AK initial)))) r) (Public EK)) ++ oemMid) 
-        (oemSteps2 r')
+        (oemSeq2 r')
         (oemFinalTpm r', oemFinal r') /\
 In (rand r') (oemFinal r') /\
 execute (caOemMidTpm, send (rand r') ++ caOemMid)
-        (caOemSteps2 r')
+        (caOemSeq2 r')
         (caOemFinalTpm, caOemFinal r').
 Proof.
   repeat split; autounfold; try (exists r; repeat split); 
@@ -576,7 +579,7 @@ TCG_CSR_LDevID
   (sign (TPM2B_Attest (Public (AK local))) (Private (AK initial)))  (* signed TPM2_Attest structure *)
   (sign (certificate (Public (AK initial))) (Private (CA oem))).    (* IAK certificate *)
 
-Definition ownerSteps : command :=
+Definition ownerSeq : command :=
 TPM2_Certify (Public (AK local)) (Private (AK initial)) ;;                      (* 1 *)
 MakeCSR_LDevID (sign (TPM2B_Attest (Public (AK local))) (Private (AK initial))) (* 2 *)
                (sign (certificate (Public (AK initial))) (Private (CA oem))) ;;
@@ -596,11 +599,11 @@ CSR_LAK ::                                                        (* 2 *)
 sign (TPM2B_Attest (Public (AK local))) (Private (AK initial)) :: (* 1 *)
 ownerIni. 
 
-Hint Unfold ownerFinalTpm ownerFinal ownerIniTpm ownerIni ownerSteps  : core.
+Hint Unfold ownerFinalTpm ownerFinal ownerIniTpm ownerIni ownerSeq  : core.
 
-(* 0 - 4 *)
+(* Steps 0 - 4 *)
 Theorem correct_ownerFinal :
-execute (ownerIniTpm, ownerIni) ownerSteps (ownerFinalTpm, ownerFinal).
+execute (ownerIniTpm, ownerIni) ownerSeq (ownerFinalTpm, ownerFinal).
 Proof.
   autounfold; repeat execute_constructor; simpl; auto.
 Qed.
@@ -620,7 +623,7 @@ Definition caOwnerIni : state :=
   key (Public (CA owner)) ;
   key (Private (CA owner)) ].
 
-Definition caOwnerSteps : command :=
+Definition caOwnerSeq : command :=
 CheckHash (hash CSR_LAK) CSR_LAK ;;                                       (* 6a *)
 CheckSig (sign (hash CSR_LAK) (Private (AK local)))                       (* 6b *)
          (Public (AK local)) ;;
@@ -641,15 +644,16 @@ sign (certificate (Public (AK local))) (Private (CA owner)) ::  (* 7 *)
 send (CSR_LAK,, (sign (hash CSR_LAK) (Private (AK local)))) ++  (* 5 *)
 caOwnerIni.
 
-Hint Unfold caOwnerFinalTpm caOwnerFinal caOwnerIniTpm caOwnerIni caOwnerSteps : core.
+Hint Unfold caOwnerFinalTpm caOwnerFinal caOwnerIniTpm caOwnerIni caOwnerSeq : core.
 
-(* 0 - 7 *)
+(* Steps 0 - 7 *)
+(* Line C in 'Relationships of Keys/Certificates' diagram *)
 Theorem CertLAK_spec :
-execute (ownerIniTpm, ownerIni) ownerSteps (ownerFinalTpm, ownerFinal) /\
+execute (ownerIniTpm, ownerIni) ownerSeq (ownerFinalTpm, ownerFinal) /\
 In CSR_LAK ownerFinal /\
 In (sign (hash CSR_LAK) (Private (AK local))) ownerFinal /\
 execute (caOwnerIniTpm, send (CSR_LAK,, sign (hash CSR_LAK) (Private (AK local))) ++ caOwnerIni)
-         caOwnerSteps 
+         caOwnerSeq 
         (caOwnerFinalTpm, caOwnerFinal).
 Proof.
   repeat split; autounfold; repeat execute_constructor; simpl; auto 12.
