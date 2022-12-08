@@ -361,6 +361,56 @@ Qed.
 Hint Resolve iff_DiscoverableSend : core.
 
 
+End KeyCert.
+
+
+
+
+
+
+
+
+
+Section IakCert.
+
+Variable newKey : key_val.
+Variable ekCert : message.
+
+Definition oemIniTpm : tpm_state :=
+[ key (Public newKey) ;   (* new key public *)
+  key (Private newKey) ;  (* new key private *)
+  key (Private EK) ].     (* EK private *)
+
+Definition oemIni : state :=
+[ key (Public (AK initial)) ;
+  key (Private (AK initial)) ;
+  sign (certificate (Public EK)) (Private (CA tm)) ;  (* EK certificate *)
+  key (Private EK) ].
+
+(* Certificate Signing Request for initial attestion key *)
+Definition CSR_IAK : message :=
+TCG_CSR_IDevID
+  (sign (certificate (Public EK)) (Private (CA tm)))  (* EK certificate *)
+  (key (Public (AK initial))).                        (* IAK public *)
+
+Definition oemSeq1 : command :=
+MakeCSR_IDevID (sign (certificate (Public EK)) (Private (CA tm))) (* 1 *)
+               (Public (AK initial)) ;;
+TPM2_Hash CSR_IAK ;;                                              (* 2 *)
+TPM2_Sign (hash CSR_IAK) (Private (AK initial)).                  (* 3 *)
+
+Definition oemMidTpm : state :=
+sign (hash CSR_IAK) (Private (AK initial)) :: (* 3 *)
+hash CSR_IAK ::                               (* 2 *)
+oemIniTpm.
+
+Definition oemMid : state :=
+sign (hash CSR_IAK) (Private (AK initial)) :: (* 3 *)
+hash CSR_IAK ::                               (* 2 *)
+CSR_IAK ::                                    (* 1 *)
+oemIni.
+
+Hint Unfold oemMidTpm oemMid oemIniTpm oemIni oemSeq1 : core.
 
 
 
@@ -662,4 +712,3 @@ Qed.
 
 
 
-End KeyCert.
