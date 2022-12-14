@@ -3,8 +3,6 @@ Require Import Coq.Init.Nat.
 Require Import Coq.Lists.List.
 Import ListNotations.
 
-Section KeyCert.
-
 (* Keys *)
 (* **** *)
 
@@ -26,9 +24,21 @@ Inductive key_val : Set :=
 | CA : ca_val -> key_val    (* certificate authority key *)
 | Bad : key_val.
 
-Inductive keyType : Set :=
-| Private : key_val -> keyType
-| Public : key_val -> keyType.
+Inductive pubKey : Set :=
+| Public : key_val -> pubKey.
+
+Inductive privKey : Set :=
+| Private : key_val -> privKey.
+
+Definition pubToPriv (k : pubKey) : privKey :=
+match k with
+  | Public v => Private v
+end.
+
+Definition privToPub (k : privKey) : pubKey :=
+match k with
+  | Private v => Public v
+end.
 
 Inductive attributeType : Set :=
 | restricted : attributeType
@@ -55,7 +65,7 @@ Inductive Decrypting : key_val -> Prop :=
 | D_EK : Decrypting EK
 | D_Bad : Decrypting Bad.
 
-Hint Constructors Restricted NonRestricted Signing Decrypting : core.
+Global Hint Constructors Restricted NonRestricted Signing Decrypting : core.
 
 Theorem or_RestrictedNonRestricted : forall v,
 Restricted v \/ NonRestricted v.
@@ -69,7 +79,7 @@ Proof.
   intros v; destruct v; auto.
 Qed.
 
-Hint Resolve or_RestrictedNonRestricted or_SigningDecrypting : core.
+Global Hint Resolve or_RestrictedNonRestricted or_SigningDecrypting : core.
 
 
 
@@ -80,38 +90,40 @@ Hint Resolve or_RestrictedNonRestricted or_SigningDecrypting : core.
 Definition randType := nat.
 
 Inductive message : Type :=
-| key : keyType -> message
+| publicKey : pubKey -> message
+| privateKey : privKey -> message
 | rand : randType -> message
 | hash : message -> message
-| sign : message -> keyType -> message
-| TPM2B_Attest : keyType -> message
+| sign : message -> privKey -> message
+| TPM2B_Attest : pubKey -> message
 | credential : message -> randType -> message
-| encrypt : message -> keyType -> message
-| TCG_CSR_IDevID : message -> message -> message
+| encrypt : message -> pubKey -> message
+| TCG_CSR_IDevID : message -> pubKey -> message
 | TCG_CSR_LDevID : message -> message -> message
-| certificate : keyType -> message    (* TODO: keyType -> id -> message *)
+| certificate : pubKey -> message    (* TODO: keyType -> id -> message *)
 | pair : message -> message -> message.
 
 Inductive command : Type :=
-| CheckAttribute : keyType -> attributeType ->command
+| CheckAttribute : pubKey -> attributeType ->command
 | TPM2_GetRandom : randType -> command
 | CheckNonce : message -> randType -> command
 | TPM2_Hash : message -> command
 | CheckHash : message -> message -> command
-| TPM2_Sign : message -> keyType -> command
-| CheckSig : message -> keyType -> command
-| TPM2_Certify : keyType -> keyType -> command
-| TPM2_MakeCredential : message -> randType -> keyType -> command
-| TPM2_ActivateCredential : message -> keyType -> keyType -> command
-| MakeCSR_IDevID : message -> keyType -> command (* TODO: id -> message -> keyType -> command*)
+| TPM2_Sign : message -> privKey -> command
+| CheckSig : message -> pubKey -> command
+| TPM2_Certify : pubKey -> privKey -> command
+| TPM2_MakeCredential : message -> randType -> pubKey -> command
+| TPM2_ActivateCredential : message -> privKey -> privKey -> command
+| MakeCSR_IDevID : message -> pubKey -> command (* TODO: id -> message -> keyType -> command*)
 | MakeCSR_LDevID : message -> message -> command
-| MakeCert : keyType -> keyType -> command  (* TODO: keyType -> id -> keyType -> message *)
+| MakeCert : pubKey -> privKey -> command  (* TODO: keyType -> id -> keyType -> message *)
 | Sequence : command -> command -> command.
 
 (* corresponds to what an entity knows *)
+(* not exhaustive *)
 Definition state := list message.
 
-(* contains everything produced by a TPM command *)
+(* contains things produced by a TPM command *)
 Definition tpm_state := list message. (* subset of state *)
 
 
@@ -121,28 +133,28 @@ Notation "c1 ;; c2" := (Sequence c1 c2) (at level 90, left associativity).
 
 Inductive execute : tpm_state * state -> command -> tpm_state * state -> Prop :=
 | E_CheckAttributeR : forall stTpm st v,
-    In (key (Public v)) st ->
+    In (publicKey (Public v)) st ->
     Restricted v ->
     execute (stTpm, st)
             (CheckAttribute (Public v) restricted)
             (stTpm, st)
 
 | E_CheckAttributeNR : forall stTpm st v,
-    In (key (Public v)) st ->
+    In (publicKey (Public v)) st ->
     NonRestricted v ->
     execute (stTpm, st)
             (CheckAttribute (Public v) nonrestricted)
             (stTpm, st)
 
 | E_CheckAttributeS : forall stTpm st v,
-    In (key (Public v)) st ->
+    In (publicKey (Public v)) st ->
     Signing v ->
     execute (stTpm, st)
             (CheckAttribute (Public v) signing)
             (stTpm, st)
 
 | E_CheckAttributeD : forall stTpm st v,
-    In (key (Public v)) st ->
+    In (publicKey (Public v)) st ->
     Decrypting v ->
     execute (stTpm, st)
             (CheckAttribute (Public v) decrypting)
@@ -175,19 +187,19 @@ Inductive execute : tpm_state * state -> command -> tpm_state * state -> Prop :=
             (stTpm, st)
 
 | E_SignR : forall stTpm st m v,
-    In (key (Private v)) stTpm -> (* key to sign resides in TPM *)
+    In (privateKey (Private v)) stTpm ->  (* key to sign resides in TPM *)
     Signing v ->
-    Restricted v ->               (* ? not required ? *)
-    In m stTpm ->                 (* message to be signed resides in same TPM *)
+    Restricted v ->                       (* ? not required ? *)
+    In m stTpm ->                         (* message to be signed resides in same TPM *)
     execute (stTpm,st)
             (TPM2_Sign m (Private v))
             ((sign m (Private v))::stTpm,
              (sign m (Private v))::st)
 
 | E_SignNR : forall stTpm st m v,
-    In (key (Private v)) stTpm -> (* key to sign resides in TPM *)
+    In (privateKey (Private v)) stTpm ->  (* key to sign resides in TPM *)
     Signing v ->
-    NonRestricted v ->            (* key must be NonRestricted *)
+    NonRestricted v ->                    (* key must be NonRestricted *)
     In m st ->
     execute (stTpm, st)
             (TPM2_Sign m (Private v))
@@ -195,51 +207,51 @@ Inductive execute : tpm_state * state -> command -> tpm_state * state -> Prop :=
              (sign m (Private v))::st)
 
 | E_CheckSig : forall stTpm st m v,
-    In (sign m (Private v)) st -> (* signature *)
-    In (key (Public v)) st ->     (* public part of key that performed the signature *)
+    In (sign m (Private v)) st ->   (* signature *)
+    In (publicKey (Public v)) st -> (* public part of key that performed the signature *)
     execute (stTpm, st)
             (CheckSig (sign m (Private v)) (Public v))
-            (stTpm, st)          
+            (stTpm, st)
 
 | E_Certify : forall stTpm st v v0,
-    In (key (Private v)) stTpm ->   (* private part of key to be certified resides in TPM *)
-    In (key (Private v0)) stTpm ->  (* key to sign the TPM2_Attest structure resides in same TPM *)
+    In (privateKey (Private v)) stTpm ->   (* private part of key to be certified resides in TPM *)
+    In (privateKey (Private v0)) stTpm ->  (* key to sign the TPM2_Attest structure resides in same TPM *)
     Signing v0 ->
     execute (stTpm, st)
             (TPM2_Certify (Public v) (Private v0)) 
             (((sign (TPM2B_Attest (Public v)) (Private v0))::stTpm),
               ((sign (TPM2B_Attest (Public v)) (Private v0))::st))
 
-| E_MakeCredential : forall stTpm st m r v0,
-    In m st ->                    (* hash of public part of key i.e., name of key *)
-    In (rand r) stTpm ->          (* secret resides in TPM *)
-    In (key (Public v0)) st ->    (* key to encrypt the credential structure *)
-    Decrypting v0 ->
+| E_MakeCredential : forall stTpm st m r v,
+    In m st ->                        (* hash of public part of key i.e., name of key *)
+    In (rand r) stTpm ->              (* secret resides in TPM *)
+    In (publicKey (Public v)) st ->   (* key to encrypt the credential structure *)
+    Decrypting v ->
     execute (stTpm, st)
-            (TPM2_MakeCredential m r (Public v0)) 
-            ((encrypt (credential m r) (Public v0))::stTpm,
-             (encrypt (credential m r) (Public v0))::st)
+            (TPM2_MakeCredential m r (Public v)) 
+            ((encrypt (credential m r) (Public v))::stTpm,
+             (encrypt (credential m r) (Public v))::st)
 
 | E_ActivateCredential : forall stTpm st m r v v0,
     In (encrypt (credential (hash m) r) (Public v)) st -> (* encrypted credential structure *)
-    In (key (Private v)) stTpm ->  (* key to decrypt resides in TPM *)
+    In (privateKey (Private v)) stTpm ->  (* key to decrypt resides in TPM *)
     Decrypting v ->
-    In (key (Private v0)) stTpm -> (* private part of key to be certified resides in same TPM *)
-    execute (stTpm, (hash m)::st) (CheckHash (hash m) (key (Public v0))) (stTpm, (hash m)::st) ->
+    In (privateKey (Private v0)) stTpm -> (* private part of key to be certified resides in same TPM *)
+    execute (stTpm, (hash m)::st) (CheckHash (hash m) (publicKey (Public v0))) (stTpm, (hash m)::st) ->
     execute (stTpm, st)
             (TPM2_ActivateCredential (encrypt (credential (hash m) r) (Public v)) 
-                                      (Private v)
-                                      (Private v0)) 
+                                     (Private v)
+                                     (Private v0)) 
             ((rand r)::(credential (hash m) r)::stTpm,
              (rand r)::(credential (hash m) r)::st)
              
 | E_MakeCSR_IDevID : forall stTpm st m k,
-    In m st ->        (* EK certificate *)
-    In (key k) st ->  (* public part of IAK *)
+    In m st ->              (* EK certificate *)
+    In (publicKey k) st ->  (* public part of IAK *)
     execute (stTpm, st)
             (MakeCSR_IDevID m k)
             (stTpm,
-            (TCG_CSR_IDevID m (key k))::st)
+            (TCG_CSR_IDevID m k)::st)
 
 | E_MakeCSR_LDevID : forall stTpm st m1 m2,
     In m1 stTpm ->    (* signed TPM2_Attest structure resides in TPM *)
@@ -250,8 +262,8 @@ Inductive execute : tpm_state * state -> command -> tpm_state * state -> Prop :=
             ((TCG_CSR_LDevID m1 m2)::st))
 
 | E_MakeCert : forall stTpm st k v0,
-    In (key k) st ->                (* key to be certified *)
-    In (key (Private v0)) stTpm ->  (* key to sign the certificate resides in TPM *)
+    In (publicKey k) st ->                (* key to be certified *)
+    In (privateKey (Private v0)) stTpm -> (* key to sign the certificate resides in TPM *)
     Signing v0 ->
     execute (stTpm, st)
             (MakeCert k (Private v0))
@@ -261,9 +273,9 @@ Inductive execute : tpm_state * state -> command -> tpm_state * state -> Prop :=
 | E_Sequence : forall stTpm st stTpm' st' stTpm'' st'' c1 c2,
     execute (stTpm,st) c1 (stTpm',st') ->
     execute (stTpm',st') c2 (stTpm'',st'') ->
-    execute (stTpm,st) (Sequence c1 c2) (stTpm'',st'').
+    execute (stTpm,st) (c1 ;; c2) (stTpm'',st'').
 
-Hint Constructors execute : core.
+Global Hint Constructors execute : core.
 
 Ltac execute_constructor :=
 match goal with
@@ -271,7 +283,7 @@ match goal with
 | [ |- execute _ (TPM2_Sign _ (Private (DevID _))) _ ] => apply E_SignNR
 | [ |- execute _ (TPM2_Sign _ (Private (CA _))) _ ] => apply E_SignNR
 | [ |- execute _ (TPM2_Sign _ (Private (Bad))) _ ] => apply E_SignNR
-| [ |- execute _ (Sequence _ _) _ ] => eapply E_Sequence
+| [ |- execute _ (_ ;; _) _ ] => eapply E_Sequence
 | [ |- execute _ _ _] => constructor
 end.
 
@@ -286,8 +298,10 @@ end.
 
 (* an entity who knows a message can discover additional messages from it *)
 Inductive discoverable : message -> state -> Prop :=
-| D_key : forall k,
-    discoverable (key k) [key k]
+| D_publicKey : forall k,
+    discoverable (publicKey k) [publicKey k]
+| D_privateKey : forall k,
+    discoverable (privateKey k) [privateKey k]
 | D_rand : forall r,
     discoverable (rand r) [rand r]
 | D_hash : forall m,
@@ -296,37 +310,36 @@ Inductive discoverable : message -> state -> Prop :=
     discoverable m st ->
     discoverable (sign m k) ((sign m k)::st)
 | D_Attest : forall k,                  (* contents of TPM2_Attest structure *)
-    discoverable (TPM2B_Attest k) [(TPM2B_Attest k); (key k)] 
+    discoverable (TPM2B_Attest k) [(TPM2B_Attest k); (publicKey k)] 
 | D_credential : forall m r,
     discoverable (credential m r) [credential m r]
 | D_encrypt : forall m k,
     discoverable (encrypt m k) [encrypt m k]
-| D_CSR_IDevID : forall m1 m2 st1 st2,  (* contents of TCG_CSR_IDevID *)
-    discoverable m1 st1 -> 
-    discoverable m2 st2 ->
-    discoverable (TCG_CSR_IDevID m1 m2) ((TCG_CSR_IDevID m1 m2)::st1++st2)
+| D_CSR_IDevID : forall m k st,  (* contents of TCG_CSR_IDevID *)
+    discoverable m st ->
+    discoverable (TCG_CSR_IDevID m k) ([(TCG_CSR_IDevID m k); (publicKey k)] ++ st)
 | D_CSR_LDevID : forall m1 m2 st1 st2,  (* contents of TCG_CSR_LDevID *)
     discoverable m1 st1 ->
     discoverable m2 st2 ->
     discoverable (TCG_CSR_LDevID m1 m2) ((TCG_CSR_LDevID m1 m2)::st1++st2)
 | D_certificate : forall k,             (* contents of certificate *)
-    discoverable (certificate k) [(certificate k); (key k)]
+    discoverable (certificate k) [(certificate k); (publicKey k)]
 | D_pair : forall m1 m2 st1 st2,        (* contents of pair *)
     discoverable m1 st1 ->
     discoverable m2 st2 -> 
-    discoverable (pair m1 m2) ((m1,,m2)::(st1++st2)).
+    discoverable (m1,,m2) ((m1,,m2)::(st1++st2)).
 
-Hint Constructors discoverable : core.
+Global Hint Constructors discoverable : core.
 
 (* when sending a message the recipient can discover these additional messages *)
 Fixpoint send (m : message) : state :=
 match m with
   | sign m0 k => ((sign m0 k)::(send m0))
-  | TPM2B_Attest k => [(TPM2B_Attest k); (key k)]
-  | TCG_CSR_IDevID m1 m2 => ((TCG_CSR_IDevID m1 m2)::(send m1)++(send m2))
+  | TPM2B_Attest k => [(TPM2B_Attest k); (publicKey k)]
+  | TCG_CSR_IDevID m k => ([(TCG_CSR_IDevID m k); (publicKey k)] ++ (send m))
   | TCG_CSR_LDevID m1 m2 => ((TCG_CSR_LDevID m1 m2)::(send m1)++(send m2))
-  | certificate k => [(certificate k); (key k)]
-  | pair m1 m2 => ((m1,,m2)::((send m1)++(send m2)))
+  | certificate k => [(certificate k); (publicKey k)]
+  | (m1,,m2) => ((m1,,m2)::((send m1)++(send m2)))
   | _ => [m]
 end.
     
@@ -358,10 +371,9 @@ Proof.
   - apply sendDiscoverable.
 Qed.
 
-Hint Resolve iff_DiscoverableSend : core.
+Global Hint Resolve iff_DiscoverableSend : core.
 
 
-End KeyCert.
 
 
 
@@ -377,43 +389,53 @@ Variable newKey : key_val.
 Variable ekCert : message.
 
 Definition oemIniTpm : tpm_state :=
-[ key (Public newKey) ;   (* new key public *)
-  key (Private newKey) ;  (* new key private *)
-  key (Private EK) ].     (* EK private *)
+[ publicKey (Public newKey) ;   (* new key public *)
+  privateKey (Private newKey) ].  (* new key private *)
+  (*privateKey (Private EK) ].*)
 
 Definition oemIni : state :=
-[ key (Public (AK initial)) ;
-  key (Private (AK initial)) ;
-  sign (certificate (Public EK)) (Private (CA tm)) ;  (* EK certificate *)
-  key (Private EK) ].
+[ publicKey (Public newKey) ;   (* new key public *)
+  privateKey (Private newKey) ;  (* new key private *)
+  ekCert ]. (* EK certificate *)
 
 (* Certificate Signing Request for initial attestion key *)
 Definition CSR_IAK : message :=
 TCG_CSR_IDevID
-  (sign (certificate (Public EK)) (Private (CA tm)))  (* EK certificate *)
-  (key (Public (AK initial))).                        (* IAK public *)
+  ekCert (* EK certificate *)
+  (Public newKey).                        (* IAK public *)
+
+
+
+
+
 
 Definition oemSeq1 : command :=
-MakeCSR_IDevID (sign (certificate (Public EK)) (Private (CA tm))) (* 1 *)
-               (Public (AK initial)) ;;
+MakeCSR_IDevID ekCert (Public newKey) ;; 
 TPM2_Hash CSR_IAK ;;                                              (* 2 *)
-TPM2_Sign (hash CSR_IAK) (Private (AK initial)).                  (* 3 *)
+TPM2_Sign (hash CSR_IAK) (Private newKey).                  (* 3 *)
 
 Definition oemMidTpm : state :=
-sign (hash CSR_IAK) (Private (AK initial)) :: (* 3 *)
+sign (hash CSR_IAK) (Private newKey) :: (* 3 *)
 hash CSR_IAK ::                               (* 2 *)
 oemIniTpm.
 
 Definition oemMid : state :=
-sign (hash CSR_IAK) (Private (AK initial)) :: (* 3 *)
+sign (hash CSR_IAK) (Private newKey) :: (* 3 *)
 hash CSR_IAK ::                               (* 2 *)
 CSR_IAK ::                                    (* 1 *)
 oemIni.
 
-Hint Unfold oemMidTpm oemMid oemIniTpm oemIni oemSeq1 : core.
+Local Hint Unfold oemMidTpm oemMid oemIniTpm oemIni oemSeq1 : core.
 
 
+(* Steps 0 - 3 *)
+Theorem correct_oemMid :
+execute (oemIniTpm, oemIni) oemSeq1 (oemMidTpm, oemMid).
+Proof.
+  autounfold; repeat execute_constructor; simpl; auto.
+Qed.
 
+Hint Resolve correct_oemMid : core.
 
 
 
