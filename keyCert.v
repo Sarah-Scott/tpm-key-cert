@@ -808,8 +808,6 @@ Axiom CertIAK_spec :
   Qed.
 
 
-
-
 (* This AK is authentic *)
 (* AK in CSR is resident in the same TPM as the EK *)
   Theorem authenticThisAK :
@@ -820,6 +818,15 @@ Axiom CertIAK_spec :
     split; simpl; auto 9.
   Qed.
 
+
+(* This AK is in fact an AK *)
+  Theorem pubNewKey_AK :
+    attestationKey pubNewKey.
+  Proof.
+    assert (H : execute (iniTPM_CA, send ((TCG_CSR_IDevID certEK pubNewKey),, sign (hash (TCG_CSR_IDevID certEK pubNewKey)) privNewKey) ++ ini_CA) c1_CA (midTPM_CA, mid_CA)). apply CertIAK_spec.
+    repeat (apply sequence_split in H; destruct H; destruct H).
+    inversion H3. subst. simpl. trivial.
+  Qed.
 
 End IAK_Cert_Protocol.
 
@@ -839,6 +846,7 @@ End IAK_Cert_Protocol.
 
 Module myIAK <: IAK_Cert_Protocol.
 
+(* OEM parameters *)
   Definition pubNewKey : pubKey := Public 11 Restricted Signing NonDecrypting.
   Definition privNewKey : privKey := Private 11 Restricted Signing NonDecrypting.
   Definition pubEK : pubKey := Public 10 Restricted NonSigning Decrypting.
@@ -846,10 +854,14 @@ Module myIAK <: IAK_Cert_Protocol.
   Definition certEK : message := sign (certificate (Public 10 Restricted NonSigning Decrypting)) 
                                       (Private 0 NonRestricted Signing NonDecrypting).
 
+(* CA parameters *)
   Definition pubCA : pubKey := Public 1 NonRestricted Signing NonDecrypting.
   Definition privCA : privKey := Private 1 NonRestricted Signing NonDecrypting.
   Definition pubTM : pubKey := Public 0 NonRestricted Signing NonDecrypting.
   Definition r : randType := 5.
+
+  Local Hint Unfold pubNewKey privNewKey pubEK privEK certEK : core.
+  Local Hint Unfold pubCA privCA pubTM r : core.
 
 
   Theorem DistinctKeys :
@@ -897,11 +909,9 @@ Module myIAK <: IAK_Cert_Protocol.
 
   Local Hint Unfold mid midTPM c1 ini iniTPM : core.
 
-
-  (*
+(*
   send ((TCG_CSR_IDevID certEK pubNewKey),, (sign (hash (TCG_CSR_IDevID certEK pubNewKey)) privNewKey))   (* 4 *)
-  *)
-
+*)
 
   Definition iniTPM_CA : tpm_state :=
   [ privateKey privCA ;
@@ -938,9 +948,9 @@ Module myIAK <: IAK_Cert_Protocol.
 
   Local Hint Unfold mid_CA midTPM_CA c1_CA ini_CA iniTPM_CA : core.
 
-  (*
+(*
   send (encrypt (credential (hash (publicKey pubNewKey)) r) pubEK)    (* 9 *)
-  *)
+*)
 
   Definition c2 : command :=
   TPM2_ActivateCredential (encrypt (credential (hash (publicKey pubNewKey)) r) pubEK) privEK (privNewKey).  (* 10 *)
@@ -959,9 +969,9 @@ Module myIAK <: IAK_Cert_Protocol.
 
   Local Hint Unfold fin finTPM c2 : core.
 
-  (*
+(*
   send (rand r)    (* 11 *)
-  *)
+*)
 
   Definition c2_CA : command :=
   CheckNonce (rand r) r ;;    (* 12 *)
@@ -978,7 +988,7 @@ Module myIAK <: IAK_Cert_Protocol.
 
   Local Hint Unfold fin_CA finTPM_CA c2_CA : core.
 
-  (* Protocol specification *)
+(* Protocol execution *)
   Theorem CertIAK_spec :
     execute (iniTPM, ini) c1 (midTPM, mid) /\     (* Steps 0 - 3 *)
     In (TCG_CSR_IDevID certEK pubNewKey) mid /\   (* Step 4 *)
@@ -994,88 +1004,49 @@ Module myIAK <: IAK_Cert_Protocol.
     execute (midTPM_CA, send (rand r) ++ mid_CA)
            c2_CA                                (* Step 12 - 13 *)
           (finTPM_CA, fin_CA).
-    Proof.
-      repeat split; autounfold; repeat execute_constructor; simpl; auto 11.
-    Qed.
+  Proof.
+    repeat split; autounfold; repeat execute_constructor; simpl; auto 11.
+  Qed.
 
 
-
-
-
-
-    (*TODO *)
-   (* 
-(* Protocol Assurances *)
-(* ******************* *)
 
 
 (* A TPM is authentic *)
 (* EK Certificate is valid *)
-Theorem authenticTPM : exists st st',
-execute st (CheckCert certEK pubTM) st'.
-Proof.
-assert (H : execute (iniTPM_CA, send ((TCG_CSR_IDevID certEK pubNewKey),, sign (hash (TCG_CSR_IDevID certEK pubNewKey)) privNewKey) ++ ini_CA) c1_CA (midTPM_CA, mid_CA)). apply CertIAK_spec.
-repeat (apply sequence_split in H; destruct H; destruct H).
-eexists; eexists; apply H4.
-Qed.
+  Theorem authenticTPM : exists st st',
+    execute st (CheckCert certEK pubTM) st'.
+  Proof.
+    exists ([], [certEK; publicKey pubTM]); exists ([], [certEK; publicKey pubTM]);
+    execute_constructor; simpl; auto.
+  Qed.
 
 
 (* This specific TPM is authentic and is represented by the EK Certificate *)
 (* EK resident in this TPM corresponds to the EK Certificate *)
-Theorem authenticThisTPM : 
-certEK = sign (certificate pubEK) (pubtoPrivKey pubTM).
-Proof.
-(* 
-Since the CA executed "CheckCert cerEK pubTM", 
-we know that "certEK" must be in the form "sign (certificate k) pubTM" for some "k : pubKey". 
-*)
-assert (H_CheckCert : exists st st', execute st (CheckCert certEK pubTM) st'). apply authenticTPM.
-destruct H_CheckCert as [ini H_CheckCert]. destruct H_CheckCert as [fin H_CheckCert].
-inversion H_CheckCert. subst. simpl. 
-assert (H_certEK : sign (certificate k) (Private i r0 s d) = certEK). assumption. clear H H0 H2 H4.
-(* 
-Since the CA executed "TPM2_MakeCredential (hash (publicKey pubNewKey)) r pubEK)", 
-we know that "pubEK" must have the "Decrypting" attribute
-and "pubEK" must be in the CA's state.
-*)
-assert (H : execute (iniTPM_CA, send ((TCG_CSR_IDevID certEK pubNewKey),, sign (hash (TCG_CSR_IDevID certEK pubNewKey)) privNewKey) ++ ini_CA) c1_CA (midTPM_CA, mid_CA)). apply CertIAK_spec.
-repeat (apply sequence_split in H; destruct H; destruct H).
-inversion H0. subst.
-(*
-Since "pubEK" must be in the CA's state,
-we can show that "pubEK" must be discoverable from the sent "certEK"
-and hence "k" is "pubEK".
-*)
-rewrite <- H_certEK in H16. unfold ini_CA in H16. simpl in H16.
-destruct H16 as [H16|H16]. inversion H16.
-destruct H16 as [H16|H16]. inversion H16.
-destruct H16 as [H16|H16]. inversion H16.
-destruct H16 as [H16|H16]. inversion H16.
-destruct H16 as [H16|H16]. inversion H3. subst. rewrite <- H9 in H16. inversion H16.
-destruct H16 as [H16|H16]. inversion H16.
-destruct H16 as [H16|H16]. inversion H16.
-destruct H16 as [H16|H16]. inversion H16. reflexivity.
-destruct H16 as [H16|H16]. inversion H16.
-destruct H16 as [H16|H16]. inversion H16.
-destruct H16 as [H16|H16]. inversion H16. rewrite H8 in H7. symmetry in H7. apply DistinctKeys in H7. inversion H7.
-destruct H16 as [H16|H16]. inversion H16.
-destruct H16 as [H16|H16]. inversion H16. rewrite H8 in H7. symmetry in H7. apply DistinctKeys in H7. inversion H7.
-inversion H16.
-Qed.
-
-
+  Theorem authenticThisTPM : 
+    certEK = sign (certificate pubEK) (pubtoPrivKey pubTM).
+  Proof.
+    autounfold; reflexivity.
+  Qed.
 
 
 (* This AK is authentic *)
 (* AK in CSR is resident in the same TPM as the EK *)
-Theorem authenticThisAK :
-In (privateKey privNewKey) finTPM /\
-In (privateKey privEK) finTPM.
-Proof.
-unfold finTPM; unfold midTPM; unfold iniTPM;
-split; simpl; auto 9.
-Qed.
+  Theorem authenticThisAK :
+    In (privateKey privNewKey) finTPM /\
+    In (privateKey privEK) finTPM.
+  Proof.
+    autounfold; simpl; auto 10.
+  Qed.
 
-*)
+
+(* This AK is in fact an AK *)
+  Theorem pubNewKey_AK :
+    attestationKey pubNewKey.
+  Proof.
+    autounfold; simpl; trivial.
+  Qed.
+
+
 End myIAK. 
 
